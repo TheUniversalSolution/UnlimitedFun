@@ -87,7 +87,6 @@ export class RunnerGame {
   private hatAccentMaterial: THREE.MeshStandardMaterial;
 
   private roadSegments: THREE.Group[] = [];
-  private speedStreaks: THREE.Mesh[] = [];
   private segmentLength = 42;
   private scrollLength = 0;
 
@@ -128,7 +127,7 @@ export class RunnerGame {
     this.container.setAttribute('role', 'application');
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.Fog(0xf4d8c4, 18, 72);
+    this.scene.fog = new THREE.Fog(0xbfe9ff, 22, 96);
 
     this.camera = new THREE.PerspectiveCamera(55, 1, 0.1, 140);
     this.camera.position.set(0, 6.4, 11.5);
@@ -136,11 +135,14 @@ export class RunnerGame {
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.container.appendChild(this.renderer.domElement);
 
+    this.finishDistance = this.randomInt(560, 820);
     this.ui = this.createHud(this.container);
 
     this.laneXs = [-this.laneWidth, 0, this.laneWidth];
@@ -248,10 +250,10 @@ export class RunnerGame {
 
       if (!this.finishSpawned && this.graceTimer <= 0) {
         this.spawnTimer += delta;
-        const spawnInterval = Math.max(
-          this.minSpawnInterval,
-          this.spawnInterval - (this.speed - 220) * 0.0006
-        );
+        const difficulty = this.getDifficultyFactor();
+        const baseInterval = this.spawnInterval - (this.speed - 220) * 0.0006;
+        const difficultyScale = THREE.MathUtils.lerp(1, 0.75, difficulty);
+        const spawnInterval = Math.max(this.minSpawnInterval * 0.85, baseInterval * difficultyScale);
         if (this.spawnTimer >= spawnInterval) {
           this.spawnTimer = 0;
           this.spawnWave();
@@ -404,17 +406,6 @@ export class RunnerGame {
         segment.position.z -= this.scrollLength;
       }
     }
-
-    for (const streak of this.speedStreaks) {
-      streak.position.z += dz * 1.4;
-      if (streak.position.z > 6) {
-        streak.position.z = -this.scrollLength - Math.random() * 12;
-        streak.position.x = THREE.MathUtils.randFloat(-this.laneWidth * 1.4, this.laneWidth * 1.4);
-        streak.position.y = THREE.MathUtils.randFloat(1.1, 2.4);
-        const material = streak.material as THREE.MeshStandardMaterial;
-        material.opacity = THREE.MathUtils.randFloat(0.15, 0.45);
-      }
-    }
   }
 
   private updateHatPickups(time: number, delta: number) {
@@ -506,11 +497,14 @@ export class RunnerGame {
     const lanes = [0, 1, 2];
     this.shuffle(lanes);
 
+    const difficulty = this.getDifficultyFactor();
+    const obstacleChance = THREE.MathUtils.lerp(0.6, 0.92, difficulty);
+    const doubleObstacleChance = THREE.MathUtils.lerp(0.18, 0.5, difficulty);
     const obstacleRoll = Math.random();
     const blockedLanes: number[] = [];
 
-    if (obstacleRoll < 0.75) {
-      const obstacleCount = obstacleRoll < 0.2 ? 2 : 1;
+    if (obstacleRoll < obstacleChance) {
+      const obstacleCount = obstacleRoll < doubleObstacleChance ? 2 : 1;
       for (let i = 0; i < obstacleCount; i += 1) {
         const lane = lanes[i];
         blockedLanes.push(lane);
@@ -525,20 +519,25 @@ export class RunnerGame {
 
     this.shuffle(openLanes);
     const hatLane = openLanes[0];
+    const hatChance = THREE.MathUtils.lerp(0.85, 0.45, difficulty);
+    const hatTrailChance = THREE.MathUtils.lerp(0.32, 0.12, difficulty);
+    const extraHatChance = THREE.MathUtils.lerp(0.28, 0.1, difficulty);
     const hatRoll = Math.random();
 
-    if (hatRoll < 0.35) {
-      this.spawnHatTrail(hatLane, 3);
-    } else {
-      this.spawnHat(hatLane, -this.spawnDepth - 4);
-      if (openLanes.length > 1 && hatRoll > 0.7) {
-        this.spawnHat(openLanes[1], -this.spawnDepth - 10);
+    if (hatRoll < hatChance) {
+      if (hatRoll < hatTrailChance) {
+        this.spawnHatTrail(hatLane, 3);
+      } else {
+        this.spawnHat(hatLane, -this.spawnDepth - 4);
+        if (openLanes.length > 1 && hatRoll > hatChance * 0.8) {
+          this.spawnHat(openLanes[1], -this.spawnDepth - 10);
+        }
       }
-    }
 
-    if (Math.random() < 0.25) {
-      const extraLane = openLanes[Math.floor(Math.random() * openLanes.length)];
-      this.spawnHat(extraLane, -this.spawnDepth - 16);
+      if (Math.random() < extraHatChance) {
+        const extraLane = openLanes[Math.floor(Math.random() * openLanes.length)];
+        this.spawnHat(extraLane, -this.spawnDepth - 16);
+      }
     }
   }
 
@@ -709,6 +708,7 @@ export class RunnerGame {
     this.isFinished = false;
     this.finishSpawned = false;
     this.distance = 0;
+    this.finishDistance = this.randomInt(560, 820);
     this.speed = 260;
     this.spawnTimer = 0;
     this.graceTimer = this.graceDuration;
@@ -761,6 +761,13 @@ export class RunnerGame {
     }
   }
 
+  private getDifficultyFactor() {
+    if (this.finishDistance <= 0) {
+      return 0;
+    }
+    return THREE.MathUtils.clamp(this.distance / this.finishDistance, 0, 1);
+  }
+
   private setMessage(text: string, visible: boolean) {
     this.ui.message.textContent = text;
     if (visible) {
@@ -810,81 +817,92 @@ export class RunnerGame {
     const sky = new THREE.Mesh(new THREE.SphereGeometry(120, 32, 32), skyMaterial);
     this.scene.add(sky);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0xfde4c8, 0.8);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0xb7d7a8, 1.05);
     this.scene.add(hemi);
 
-    const dir = new THREE.DirectionalLight(0xffffff, 1.05);
-    dir.position.set(6, 12, 8);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.25);
+    dir.position.set(12, 16, 6);
     dir.castShadow = true;
-    dir.shadow.mapSize.set(1024, 1024);
+    dir.shadow.mapSize.set(2048, 2048);
     dir.shadow.camera.near = 0.1;
     dir.shadow.camera.far = 50;
     dir.shadow.camera.left = -12;
     dir.shadow.camera.right = 12;
     dir.shadow.camera.top = 12;
     dir.shadow.camera.bottom = -12;
+    dir.shadow.bias = -0.0004;
+    dir.shadow.normalBias = 0.02;
     this.scene.add(dir);
 
-    const rim = new THREE.PointLight(0xffc272, 0.6, 40);
-    rim.position.set(-6, 6, 10);
-    this.scene.add(rim);
+    const sunFill = new THREE.PointLight(0xfff1c4, 0.55, 60);
+    sunFill.position.set(-10, 12, 16);
+    this.scene.add(sunFill);
 
     const roadWidth = this.laneWidth * 3;
     const roadMaterial = new THREE.MeshStandardMaterial({
-      color: 0x1f2937,
-      roughness: 0.92,
+      color: 0x3b4251,
+      roughness: 0.95,
       metalness: 0.05
     });
     const edgeMaterial = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.7,
+      color: 0x6b7280,
+      roughness: 0.65,
       metalness: 0.1
     });
     const laneMaterial = new THREE.MeshStandardMaterial({
-      color: 0x93c5fd,
-      roughness: 0.35,
-      metalness: 0.2,
-      emissive: new THREE.Color(0x3b82f6),
-      emissiveIntensity: 0.4
+      color: 0xfef3c7,
+      roughness: 0.4,
+      metalness: 0.1,
+      emissive: new THREE.Color(0xf8fafc),
+      emissiveIntensity: 0.25
     });
-    const panelMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffb454,
-      roughness: 0.35,
-      metalness: 0.2,
-      emissive: new THREE.Color(0xff7a45),
-      emissiveIntensity: 0.6,
-      transparent: true,
-      opacity: 0.8,
-      side: THREE.DoubleSide
+    const grassMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6fbf54,
+      roughness: 0.9,
+      metalness: 0.05
+    });
+    const hedgeMaterial = new THREE.MeshStandardMaterial({
+      color: 0x3f8f3f,
+      roughness: 0.85,
+      metalness: 0.05
+    });
+    const trunkMaterial = new THREE.MeshStandardMaterial({
+      color: 0x7c5f44,
+      roughness: 0.8,
+      metalness: 0.05
+    });
+    const leafMaterials = [
+      new THREE.MeshStandardMaterial({ color: 0x4cae4f, roughness: 0.8, metalness: 0.05 }),
+      new THREE.MeshStandardMaterial({ color: 0x66bb6a, roughness: 0.82, metalness: 0.05 }),
+      new THREE.MeshStandardMaterial({ color: 0x3f9f5f, roughness: 0.78, metalness: 0.05 })
+    ];
+    const flowerMaterial = new THREE.MeshStandardMaterial({
+      color: 0xf472b6,
+      roughness: 0.5,
+      metalness: 0.1,
+      emissive: new THREE.Color(0xfbcfe8),
+      emissiveIntensity: 0.2
     });
 
     const segmentCount = 3;
     for (let i = 0; i < segmentCount; i += 1) {
-      const segment = this.buildRoadSegment(roadWidth, roadMaterial, edgeMaterial, laneMaterial, panelMaterial);
+      const segment = this.buildRoadSegment(
+        roadWidth,
+        roadMaterial,
+        edgeMaterial,
+        laneMaterial,
+        grassMaterial,
+        hedgeMaterial,
+        trunkMaterial,
+        leafMaterials,
+        flowerMaterial
+      );
       segment.position.z = -this.segmentLength * i;
       this.scene.add(segment);
       this.roadSegments.push(segment);
     }
     this.scrollLength = this.segmentLength * this.roadSegments.length;
 
-    const streakGeometry = new THREE.BoxGeometry(0.06, 0.18, 2.2);
-    for (let i = 0; i < 24; i += 1) {
-      const streakMaterial = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: THREE.MathUtils.randFloat(0.18, 0.42),
-        emissive: new THREE.Color(0x93c5fd),
-        emissiveIntensity: 0.7
-      });
-      const streak = new THREE.Mesh(streakGeometry, streakMaterial);
-      streak.position.set(
-        THREE.MathUtils.randFloat(-this.laneWidth * 1.4, this.laneWidth * 1.4),
-        THREE.MathUtils.randFloat(1.1, 2.4),
-        -Math.random() * this.scrollLength
-      );
-      this.speedStreaks.push(streak);
-      this.scene.add(streak);
-    }
   }
 
   private buildRoadSegment(
@@ -892,9 +910,19 @@ export class RunnerGame {
     roadMaterial: THREE.MeshStandardMaterial,
     edgeMaterial: THREE.MeshStandardMaterial,
     laneMaterial: THREE.MeshStandardMaterial,
-    panelMaterial: THREE.MeshStandardMaterial
+    grassMaterial: THREE.MeshStandardMaterial,
+    hedgeMaterial: THREE.MeshStandardMaterial,
+    trunkMaterial: THREE.MeshStandardMaterial,
+    leafMaterials: THREE.MeshStandardMaterial[],
+    flowerMaterial: THREE.MeshStandardMaterial
   ) {
     const segment = new THREE.Group();
+
+    const grass = new THREE.Mesh(new THREE.PlaneGeometry(roadWidth + 18, this.segmentLength), grassMaterial);
+    grass.rotation.x = -Math.PI / 2;
+    grass.position.y = -0.06;
+    grass.receiveShadow = true;
+    segment.add(grass);
 
     const road = new THREE.Mesh(new THREE.PlaneGeometry(roadWidth, this.segmentLength), roadMaterial);
     road.rotation.x = -Math.PI / 2;
@@ -927,24 +955,83 @@ export class RunnerGame {
       }
     }
 
-    const panelGeometry = new THREE.PlaneGeometry(0.55, 1.4);
-    const panelCount = 4;
-    for (let i = 0; i < panelCount; i += 1) {
-      const z = -this.segmentLength / 2 + (this.segmentLength / panelCount) * i + 4;
-      const leftPanel = new THREE.Mesh(panelGeometry, panelMaterial);
-      leftPanel.position.set(-roadWidth / 2 - 0.9, 0.9, z);
-      leftPanel.rotation.y = Math.PI / 2;
-      leftPanel.castShadow = false;
-      leftPanel.receiveShadow = false;
+    const hedgeGeometry = new THREE.BoxGeometry(0.8, 0.45, 2.2);
+    const hedgeCount = 4;
+    for (let i = 0; i < hedgeCount; i += 1) {
+      const z = -this.segmentLength / 2 + (this.segmentLength / hedgeCount) * i + 4;
+      const leftHedge = new THREE.Mesh(hedgeGeometry, hedgeMaterial);
+      leftHedge.position.set(-roadWidth / 2 - 0.9, 0.22, z);
+      leftHedge.castShadow = true;
+      leftHedge.receiveShadow = true;
 
-      const rightPanel = leftPanel.clone();
-      rightPanel.position.x = roadWidth / 2 + 0.9;
-      rightPanel.rotation.y = -Math.PI / 2;
+      const rightHedge = leftHedge.clone();
+      rightHedge.position.x = roadWidth / 2 + 0.9;
 
-      segment.add(leftPanel, rightPanel);
+      segment.add(leftHedge, rightHedge);
+    }
+
+    const plantCount = 6;
+    const sideOffsets = [-1, 1];
+    for (const side of sideOffsets) {
+      for (let i = 0; i < plantCount; i += 1) {
+        const plant = this.createPlantCluster(trunkMaterial, leafMaterials, flowerMaterial);
+        const z = -this.segmentLength / 2 + (this.segmentLength / plantCount) * (i + Math.random());
+        const x = side * (roadWidth / 2 + THREE.MathUtils.randFloat(1.6, 4.2));
+        plant.position.set(x, 0, z);
+        segment.add(plant);
+      }
     }
 
     return segment;
+  }
+
+  private createPlantCluster(
+    trunkMaterial: THREE.MeshStandardMaterial,
+    leafMaterials: THREE.MeshStandardMaterial[],
+    flowerMaterial: THREE.MeshStandardMaterial
+  ) {
+    const group = new THREE.Group();
+    const variant = Math.random();
+    const leafMaterial = leafMaterials[Math.floor(Math.random() * leafMaterials.length)];
+
+    if (variant < 0.45) {
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 1.1, 10), trunkMaterial);
+      trunk.position.y = 0.55;
+      const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 12), leafMaterial);
+      canopy.position.y = 1.2;
+      canopy.scale.set(1, 1.1, 1);
+      group.add(trunk, canopy);
+
+      if (Math.random() > 0.6) {
+        const extra = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 10), leafMaterial);
+        extra.position.set(0.35, 1.0, 0.1);
+        group.add(extra);
+      }
+
+      group.scale.setScalar(THREE.MathUtils.randFloat(0.85, 1.2));
+    } else if (variant < 0.8) {
+      const base = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), leafMaterial);
+      base.position.y = 0.3;
+      const sideA = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 9), leafMaterial);
+      sideA.position.set(0.35, 0.22, 0.2);
+      const sideB = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 9), leafMaterial);
+      sideB.position.set(-0.3, 0.18, -0.15);
+      group.add(base, sideA, sideB);
+    } else {
+      const mound = new THREE.Mesh(new THREE.SphereGeometry(0.35, 10, 8), leafMaterial);
+      mound.position.y = 0.22;
+      group.add(mound);
+
+      for (let i = 0; i < 4; i += 1) {
+        const blossom = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 8), flowerMaterial);
+        const angle = (Math.PI * 2 * i) / 4;
+        blossom.position.set(Math.cos(angle) * 0.18, 0.4, Math.sin(angle) * 0.18);
+        group.add(blossom);
+      }
+    }
+
+    this.enableShadows(group);
+    return group;
   }
 
   private createPlayer() {
@@ -1130,20 +1217,47 @@ export class RunnerGame {
     }
 
     const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    gradient.addColorStop(0, '#9bd4ff');
-    gradient.addColorStop(0.55, '#f7d7a7');
-    gradient.addColorStop(1, '#f4d8c4');
+    gradient.addColorStop(0, '#8fd2ff');
+    gradient.addColorStop(0.5, '#bfe9ff');
+    gradient.addColorStop(1, '#f7d7a7');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
-    for (let i = 0; i < 80; i += 1) {
-      const x = Math.random() * canvas.width;
-      const y = Math.random() * canvas.height;
-      const radius = Math.random() * 2 + 1;
+    const sunX = canvas.width * 0.78;
+    const sunY = canvas.height * 0.18;
+    const sunGlow = ctx.createRadialGradient(sunX, sunY, 10, sunX, sunY, 110);
+    sunGlow.addColorStop(0, 'rgba(255, 251, 235, 0.95)');
+    sunGlow.addColorStop(0.4, 'rgba(255, 244, 200, 0.45)');
+    sunGlow.addColorStop(1, 'rgba(255, 244, 200, 0)');
+    ctx.fillStyle = sunGlow;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = 'rgba(255, 250, 230, 0.95)';
+    ctx.beginPath();
+    ctx.arc(sunX, sunY, 26, 0, Math.PI * 2);
+    ctx.fill();
+
+    const drawCloud = (x: number, y: number, scale: number, alpha: number) => {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(scale, scale);
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
       ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.arc(-30, 0, 26, 0, Math.PI * 2);
+      ctx.arc(0, -10, 30, 0, Math.PI * 2);
+      ctx.arc(30, 0, 24, 0, Math.PI * 2);
+      ctx.arc(10, 18, 28, 0, Math.PI * 2);
       ctx.fill();
+      ctx.restore();
+    };
+
+    for (let i = 0; i < 10; i += 1) {
+      drawCloud(
+        Math.random() * canvas.width,
+        Math.random() * canvas.height * 0.55,
+        THREE.MathUtils.randFloat(0.45, 0.9),
+        THREE.MathUtils.randFloat(0.55, 0.9)
+      );
     }
 
     const texture = new THREE.CanvasTexture(canvas);
