@@ -4,6 +4,7 @@ const STORAGE_KEY = 'unlimitedfun-best-hats';
 
 type ObstacleKind = 'doorway' | 'sign' | 'finish';
 type HatKind = 'top' | 'cap' | 'beanie' | 'crown';
+type CharacterKind = 'female' | 'male';
 
 type HatPickup = {
   mesh: THREE.Group;
@@ -33,11 +34,32 @@ type FallenHat = {
   life: number;
 };
 
+type CharacterRig = {
+  root: THREE.Group;
+  head: THREE.Mesh;
+  torso: THREE.Mesh;
+  hips: THREE.Mesh;
+  armL: THREE.Group;
+  armR: THREE.Group;
+  legL: THREE.Group;
+  legR: THREE.Group;
+  headRadius: number;
+};
+
 type HudElements = {
   hats: HTMLElement;
   distance: HTMLElement;
   best: HTMLElement;
   message: HTMLElement;
+  options: HTMLElement;
+  distanceGroup: HTMLElement;
+  distanceValue: HTMLElement;
+  distanceHint: HTMLElement;
+  distanceMinus: HTMLButtonElement;
+  distancePlus: HTMLButtonElement;
+  characterGroup: HTMLElement;
+  characterFemale: HTMLButtonElement;
+  characterMale: HTMLButtonElement;
 };
 
 export class RunnerGame {
@@ -47,8 +69,10 @@ export class RunnerGame {
   private renderer: THREE.WebGLRenderer;
 
   private player: THREE.Group;
+  private playerRig!: CharacterRig;
   private playerBodyMaterial: THREE.MeshStandardMaterial;
   private playerAccentMaterial: THREE.MeshStandardMaterial;
+  private playerSkinMaterial: THREE.MeshStandardMaterial;
 
   private laneWidth = 3.2;
   private laneXs: number[] = [];
@@ -66,7 +90,10 @@ export class RunnerGame {
 
   private distance = 0;
   private distanceScale = 0.08;
-  private finishDistance = 650;
+  private defaultFinishDistance = 750;
+  private minFinishDistance = 400;
+  private maxFinishDistance = 1500;
+  private finishDistance = 750;
   private finishSpawned = false;
 
   private hats = 0;
@@ -85,10 +112,13 @@ export class RunnerGame {
 
   private hatMaterials: Record<HatKind, THREE.MeshStandardMaterial>;
   private hatAccentMaterial: THREE.MeshStandardMaterial;
+  private hairMaterialFemale: THREE.MeshStandardMaterial;
+  private hairMaterialMale: THREE.MeshStandardMaterial;
 
   private roadSegments: THREE.Group[] = [];
   private segmentLength = 42;
   private scrollLength = 0;
+  private curveStrength = 0.0012;
 
   private pointerStart: { x: number; y: number } | null = null;
   private swipeConsumed = false;
@@ -102,6 +132,14 @@ export class RunnerGame {
   private shakeStrength = 0.2;
   private playerFlash = 0;
   private playerFlashDuration = 0.2;
+
+  private currentCharacter: CharacterKind = 'female';
+  private pendingCharacter: CharacterKind | null = null;
+
+  private distanceSelectionActive = false;
+  private autoStartActive = false;
+  private autoStartDeadline = 0;
+  private pendingFinishDistance: number | null = null;
 
   private playerHitWidth = 0.6;
   private playerHitDepth = 0.6;
@@ -142,7 +180,7 @@ export class RunnerGame {
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.container.appendChild(this.renderer.domElement);
 
-    this.finishDistance = this.randomInt(560, 820);
+    this.finishDistance = this.defaultFinishDistance;
     this.ui = this.createHud(this.container);
 
     this.laneXs = [-this.laneWidth, 0, this.laneWidth];
@@ -179,8 +217,28 @@ export class RunnerGame {
       roughness: 0.7,
       metalness: 0.05
     });
+    this.playerSkinMaterial = new THREE.MeshStandardMaterial({
+      color: 0xf7d8c2,
+      roughness: 0.6,
+      metalness: 0.05
+    });
 
-    this.player = this.createPlayer();
+    this.hairMaterialFemale = new THREE.MeshStandardMaterial({
+      color: 0xf7e2a3,
+      roughness: 0.7,
+      metalness: 0.05,
+      emissive: new THREE.Color(0x7a5f2b),
+      emissiveIntensity: 0.1
+    });
+    this.hairMaterialMale = new THREE.MeshStandardMaterial({
+      color: 0x1f2937,
+      roughness: 0.6,
+      metalness: 0.05,
+      emissive: new THREE.Color(0x0b0f16),
+      emissiveIntensity: 0.05
+    });
+
+    this.player = this.createPlayer(this.currentCharacter);
     this.scene.add(this.player);
 
     this.createEnvironment();
@@ -193,6 +251,8 @@ export class RunnerGame {
     this.graceTimer = this.graceDuration;
     this.handleResize();
     window.addEventListener('resize', this.handleResize);
+
+    this.bindHudControls();
   }
 
   start() {
@@ -224,7 +284,9 @@ export class RunnerGame {
     const isActive = !this.isGameOver && !this.isFinished;
 
     if (isActive) {
-      this.speed = Math.min(this.maxSpeed, this.speed + this.speedRamp * delta);
+      const difficulty = this.getDifficultyFactor();
+      const ramp = this.speedRamp * (1 + difficulty * 0.55);
+      this.speed = Math.min(this.maxSpeed, this.speed + ramp * delta);
       this.distance += this.speed * delta * this.distanceScale;
     }
 
@@ -252,8 +314,8 @@ export class RunnerGame {
         this.spawnTimer += delta;
         const difficulty = this.getDifficultyFactor();
         const baseInterval = this.spawnInterval - (this.speed - 220) * 0.0006;
-        const difficultyScale = THREE.MathUtils.lerp(1, 0.75, difficulty);
-        const spawnInterval = Math.max(this.minSpawnInterval * 0.85, baseInterval * difficultyScale);
+        const difficultyScale = THREE.MathUtils.lerp(1, 0.85, difficulty);
+        const spawnInterval = Math.max(this.minSpawnInterval * 0.95, baseInterval * difficultyScale);
         if (this.spawnTimer >= spawnInterval) {
           this.spawnTimer = 0;
           this.spawnWave();
@@ -262,6 +324,8 @@ export class RunnerGame {
 
       this.updateHud();
     }
+
+    this.updatePostRunOptions(time);
   }
 
   private setupInput() {
@@ -344,8 +408,16 @@ export class RunnerGame {
     this.player.position.x += deltaX * 0.2;
 
     const timeSeconds = time * 0.001;
-    this.player.position.y = Math.sin(timeSeconds * 5) * 0.04;
+    const isActive = !this.isGameOver && !this.isFinished;
+    const motionScale = isActive ? 1 : 0.2;
+    const speedFactor = THREE.MathUtils.clamp(this.speed / this.maxSpeed, 0, 1);
+    const pace = THREE.MathUtils.lerp(2.2, 4.6, speedFactor);
+    const stride = THREE.MathUtils.lerp(0.18, 0.5, speedFactor) * motionScale;
+    this.updateWalkCycle(timeSeconds, stride, pace);
+    const bob = Math.sin(timeSeconds * pace * 0.5) * 0.02 * motionScale;
+    this.player.position.y = bob + 0.02 * motionScale;
     this.player.rotation.z = THREE.MathUtils.clamp(deltaX * 0.1, -0.35, 0.35);
+    this.player.rotation.x = THREE.MathUtils.lerp(-0.04, -0.12, speedFactor) * motionScale;
 
     if (this.playerFlash > 0) {
       this.playerFlash = Math.max(0, this.playerFlash - delta);
@@ -358,13 +430,38 @@ export class RunnerGame {
     this.updateCamera(timeSeconds, delta);
   }
 
+  private updateWalkCycle(timeSeconds: number, stride: number, pace: number) {
+    if (!this.playerRig) {
+      return;
+    }
+
+    const swing = Math.sin(timeSeconds * pace);
+    const armSwing = swing * stride * 0.6;
+    const legSwing = -swing * stride;
+
+    this.playerRig.armL.rotation.x = armSwing;
+    this.playerRig.armR.rotation.x = -armSwing;
+    this.playerRig.legL.rotation.x = legSwing;
+    this.playerRig.legR.rotation.x = -legSwing;
+
+    this.playerRig.armL.rotation.z = 0.02;
+    this.playerRig.armR.rotation.z = -0.02;
+    this.playerRig.legL.rotation.z = 0.04;
+    this.playerRig.legR.rotation.z = -0.04;
+
+    const sway = Math.sin(timeSeconds * pace * 0.5) * stride * 0.35;
+    this.playerRig.torso.rotation.y = sway;
+    this.playerRig.hips.rotation.y = -sway * 0.6;
+    this.playerRig.head.rotation.y = -sway * 0.4;
+  }
+
   private updateCamera(timeSeconds: number, delta: number) {
-    const followX = this.player.position.x * 0.4;
+    const followX = this.player.position.x * 0.25;
     const targetY = 6.4 + Math.sin(timeSeconds * 1.8) * 0.05;
     this.cameraTarget.set(followX, targetY, 11.5);
     this.camera.position.lerp(this.cameraTarget, 0.08);
 
-    this.lookTarget.set(this.player.position.x * 0.6, 1.9, -10.5);
+    this.lookTarget.set(this.player.position.x * 0.35, 1.9, -10.5);
     this.camera.lookAt(this.lookTarget);
 
     if (this.shakeTime > 0) {
@@ -405,6 +502,8 @@ export class RunnerGame {
       if (segment.position.z > this.segmentLength * 0.5) {
         segment.position.z -= this.scrollLength;
       }
+      segment.position.y = this.getCurveOffset(segment.position.z);
+      segment.rotation.x = this.getCurveTilt(segment.position.z);
     }
   }
 
@@ -417,7 +516,8 @@ export class RunnerGame {
       const hat = this.hatPickups[i];
       hat.mesh.position.z += dz;
       hat.mesh.rotation.y += hat.spin * delta;
-      hat.mesh.position.y = this.hatPickupY + Math.sin(timeSeconds * 2 + hat.bob) * 0.12;
+      hat.mesh.position.y =
+        this.hatPickupY + Math.sin(timeSeconds * 2 + hat.bob) * 0.12 + this.getCurveOffset(hat.mesh.position.z);
 
       if (!this.isGameOver && !this.isFinished) {
         const dx = Math.abs(hat.mesh.position.x - playerX);
@@ -443,6 +543,7 @@ export class RunnerGame {
     for (let i = this.obstacles.length - 1; i >= 0; i -= 1) {
       const obstacle = this.obstacles[i];
       obstacle.mesh.position.z += dz;
+      obstacle.mesh.position.y = this.getCurveOffset(obstacle.mesh.position.z);
 
       if (obstacle.kind === 'sign') {
         const swing = Math.sin(timeSeconds * obstacle.swingSpeed + obstacle.swingPhase);
@@ -498,8 +599,8 @@ export class RunnerGame {
     this.shuffle(lanes);
 
     const difficulty = this.getDifficultyFactor();
-    const obstacleChance = THREE.MathUtils.lerp(0.6, 0.92, difficulty);
-    const doubleObstacleChance = THREE.MathUtils.lerp(0.18, 0.5, difficulty);
+    const obstacleChance = THREE.MathUtils.lerp(0.58, 0.82, difficulty);
+    const doubleObstacleChance = THREE.MathUtils.lerp(0.16, 0.32, difficulty);
     const obstacleRoll = Math.random();
     const blockedLanes: number[] = [];
 
@@ -544,7 +645,7 @@ export class RunnerGame {
   private spawnHat(laneIndex: number, spawnZ: number) {
     const kind = this.hatKinds[Math.floor(Math.random() * this.hatKinds.length)];
     const hat = this.createHatModel(kind);
-    hat.position.set(this.laneXs[laneIndex], this.hatPickupY, spawnZ);
+    hat.position.set(this.laneXs[laneIndex], this.hatPickupY + this.getCurveOffset(spawnZ), spawnZ);
     hat.scale.setScalar(0.95);
     this.scene.add(hat);
     this.hatPickups.push({
@@ -565,7 +666,7 @@ export class RunnerGame {
   private spawnObstacle(laneIndex: number, spawnZ: number) {
     const kind: ObstacleKind = Math.random() < 0.55 ? 'doorway' : 'sign';
     const obstacle = kind === 'doorway' ? this.createDoorwayModel() : this.createSignModel();
-    obstacle.position.set(this.laneXs[laneIndex], 0, spawnZ);
+    obstacle.position.set(this.laneXs[laneIndex], this.getCurveOffset(spawnZ), spawnZ);
     this.scene.add(obstacle);
 
     const data: Obstacle = {
@@ -593,7 +694,8 @@ export class RunnerGame {
   private spawnFinishGate() {
     this.finishSpawned = true;
     const gate = this.createFinishGate();
-    gate.position.set(0, 0, -this.spawnDepth - 8);
+    const spawnZ = -this.spawnDepth - 8;
+    gate.position.set(0, this.getCurveOffset(spawnZ), spawnZ);
     this.scene.add(gate);
     this.obstacles.push({
       mesh: gate,
@@ -692,6 +794,7 @@ export class RunnerGame {
     }
 
     this.setMessage(`Finish line!\nStacked ${this.hats} hats\nTap to run again`, true);
+    this.openPostRunOptions();
   }
 
   private gameOver() {
@@ -701,20 +804,23 @@ export class RunnerGame {
 
     this.isGameOver = true;
     this.setMessage(`Bonked!\nStacked ${this.hats} hats\nTap to retry`, true);
+    this.openPostRunOptions();
   }
 
   private resetRun() {
+    const nextDistance = this.pendingFinishDistance ?? this.defaultFinishDistance;
+    const nextCharacter = this.pendingCharacter ?? this.currentCharacter;
+    this.closePostRunOptions();
+
     this.isGameOver = false;
     this.isFinished = false;
     this.finishSpawned = false;
     this.distance = 0;
-    this.finishDistance = this.randomInt(560, 820);
+    this.finishDistance = nextDistance;
     this.speed = 260;
     this.spawnTimer = 0;
     this.graceTimer = this.graceDuration;
     this.targetLane = 1;
-    this.player.position.set(this.laneXs[this.targetLane], 0, 0);
-    this.player.rotation.set(0, 0, 0);
     this.hitCooldown = 0;
     this.pointerStart = null;
     this.hasStarted = false;
@@ -723,6 +829,14 @@ export class RunnerGame {
 
     this.clearWorld();
     this.clearStack();
+
+    if (nextCharacter !== this.currentCharacter) {
+      this.swapCharacter(nextCharacter);
+      this.currentCharacter = nextCharacter;
+    }
+    this.pendingCharacter = null;
+    this.player.position.set(this.laneXs[this.targetLane], 0, 0);
+    this.player.rotation.set(0, 0, 0);
 
     this.ui.hats.textContent = 'Hats 0';
     this.ui.distance.textContent = `Finish ${this.finishDistance}m`;
@@ -768,6 +882,15 @@ export class RunnerGame {
     return THREE.MathUtils.clamp(this.distance / this.finishDistance, 0, 1);
   }
 
+  private getCurveOffset(z: number) {
+    return -this.curveStrength * z * z;
+  }
+
+  private getCurveTilt(z: number) {
+    const slope = -2 * this.curveStrength * z;
+    return -Math.atan(slope);
+  }
+
   private setMessage(text: string, visible: boolean) {
     this.ui.message.textContent = text;
     if (visible) {
@@ -803,10 +926,186 @@ export class RunnerGame {
     message.textContent = 'Swipe to switch lanes\nGrab hats, dodge signs';
     message.setAttribute('aria-live', 'polite');
 
-    hud.append(top, message);
+    const options = document.createElement('div');
+    options.id = 'hud-options';
+    options.classList.add('is-hidden');
+
+    const distanceGroup = document.createElement('div');
+    distanceGroup.id = 'hud-distance-group';
+
+    const distanceTitle = document.createElement('div');
+    distanceTitle.id = 'hud-distance-title';
+    distanceTitle.textContent = 'Next distance';
+
+    const distanceControls = document.createElement('div');
+    distanceControls.id = 'hud-distance-controls';
+
+    const distanceMinus = document.createElement('button');
+    distanceMinus.id = 'hud-distance-minus';
+    distanceMinus.type = 'button';
+    distanceMinus.textContent = '-100m';
+
+    const distanceValue = document.createElement('div');
+    distanceValue.id = 'hud-distance-value';
+    distanceValue.textContent = `${this.defaultFinishDistance}m`;
+
+    const distancePlus = document.createElement('button');
+    distancePlus.id = 'hud-distance-plus';
+    distancePlus.type = 'button';
+    distancePlus.textContent = '+100m';
+
+    distanceControls.append(distanceMinus, distanceValue, distancePlus);
+
+    const distanceHint = document.createElement('div');
+    distanceHint.id = 'hud-distance-hint';
+    distanceHint.textContent = '3s to change';
+
+    distanceGroup.append(distanceTitle, distanceControls, distanceHint);
+
+    const characterGroup = document.createElement('div');
+    characterGroup.id = 'hud-character-group';
+
+    const characterTitle = document.createElement('div');
+    characterTitle.id = 'hud-character-title';
+    characterTitle.textContent = 'Runner';
+
+    const characterControls = document.createElement('div');
+    characterControls.id = 'hud-character-controls';
+
+    const characterFemale = document.createElement('button');
+    characterFemale.id = 'hud-character-female';
+    characterFemale.type = 'button';
+    characterFemale.textContent = 'Blonde female';
+
+    const characterMale = document.createElement('button');
+    characterMale.id = 'hud-character-male';
+    characterMale.type = 'button';
+    characterMale.textContent = 'Dark hair male';
+
+    characterControls.append(characterFemale, characterMale);
+    characterGroup.append(characterTitle, characterControls);
+
+    options.append(distanceGroup, characterGroup);
+
+    hud.append(top, message, options);
     container.appendChild(hud);
 
-    return { hats, distance, best, message };
+    return {
+      hats,
+      distance,
+      best,
+      message,
+      options,
+      distanceGroup,
+      distanceValue,
+      distanceHint,
+      distanceMinus,
+      distancePlus,
+      characterGroup,
+      characterFemale,
+      characterMale
+    };
+  }
+
+  private bindHudControls() {
+    this.ui.distanceMinus.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.adjustPendingDistance(-100);
+    });
+    this.ui.distancePlus.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.adjustPendingDistance(100);
+    });
+    this.ui.characterFemale.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.selectCharacter('female');
+    });
+    this.ui.characterMale.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.selectCharacter('male');
+    });
+  }
+
+  private openPostRunOptions() {
+    this.ui.options.classList.remove('is-hidden');
+    this.ui.distanceGroup.classList.remove('is-hidden');
+    this.distanceSelectionActive = true;
+    this.pendingFinishDistance = this.defaultFinishDistance;
+    this.autoStartActive = true;
+    this.autoStartDeadline = performance.now() + 3000;
+    this.ui.distanceHint.classList.remove('is-hidden');
+    this.updateDistanceOptions();
+    this.updateCharacterOptions();
+  }
+
+  private closePostRunOptions() {
+    this.ui.options.classList.add('is-hidden');
+    this.ui.distanceGroup.classList.add('is-hidden');
+    this.distanceSelectionActive = false;
+    this.autoStartActive = false;
+    this.pendingFinishDistance = null;
+  }
+
+  private updatePostRunOptions(time: number) {
+    if (this.ui.options.classList.contains('is-hidden')) {
+      return;
+    }
+
+    if (this.autoStartActive) {
+      const timeLeft = Math.max(0, this.autoStartDeadline - time);
+      const secondsLeft = Math.ceil(timeLeft / 1000);
+      this.ui.distanceHint.textContent = `Choose distance (${secondsLeft}s)`;
+      if (timeLeft <= 0) {
+        this.autoStartActive = false;
+        this.resetRun();
+        return;
+      }
+    }
+  }
+
+  private adjustPendingDistance(delta: number) {
+    if (!this.distanceSelectionActive) {
+      return;
+    }
+    this.cancelAutoStart();
+    const value = (this.pendingFinishDistance ?? this.defaultFinishDistance) + delta;
+    this.pendingFinishDistance = THREE.MathUtils.clamp(value, this.minFinishDistance, this.maxFinishDistance);
+    this.updateDistanceOptions();
+  }
+
+  private updateDistanceOptions() {
+    const value = this.pendingFinishDistance ?? this.defaultFinishDistance;
+    this.ui.distanceValue.textContent = `${value}m`;
+    const disabled = !this.distanceSelectionActive;
+    this.ui.distanceMinus.disabled = disabled;
+    this.ui.distancePlus.disabled = disabled;
+    if (!this.distanceSelectionActive) {
+      this.ui.distanceHint.textContent = 'Default distance';
+      this.ui.distanceHint.classList.remove('is-hidden');
+    }
+  }
+
+  private cancelAutoStart() {
+    if (!this.autoStartActive) {
+      return;
+    }
+    this.autoStartActive = false;
+    this.ui.distanceHint.classList.add('is-hidden');
+  }
+
+  private selectCharacter(kind: CharacterKind) {
+    if (!this.isGameOver && !this.isFinished) {
+      return;
+    }
+    this.cancelAutoStart();
+    this.pendingCharacter = kind;
+    this.updateCharacterOptions();
+  }
+
+  private updateCharacterOptions() {
+    const selected = this.pendingCharacter ?? this.currentCharacter;
+    this.ui.characterFemale.classList.toggle('is-selected', selected === 'female');
+    this.ui.characterMale.classList.toggle('is-selected', selected === 'male');
   }
 
   private createEnvironment() {
@@ -995,20 +1294,20 @@ export class RunnerGame {
     const leafMaterial = leafMaterials[Math.floor(Math.random() * leafMaterials.length)];
 
     if (variant < 0.45) {
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 1.1, 10), trunkMaterial);
-      trunk.position.y = 0.55;
-      const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 12), leafMaterial);
-      canopy.position.y = 1.2;
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.2, 2.4, 12), trunkMaterial);
+      trunk.position.y = 1.2;
+      const canopy = new THREE.Mesh(new THREE.SphereGeometry(1.1, 18, 14), leafMaterial);
+      canopy.position.y = 2.45;
       canopy.scale.set(1, 1.1, 1);
       group.add(trunk, canopy);
 
       if (Math.random() > 0.6) {
-        const extra = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 10), leafMaterial);
-        extra.position.set(0.35, 1.0, 0.1);
+        const extra = new THREE.Mesh(new THREE.SphereGeometry(0.7, 14, 12), leafMaterial);
+        extra.position.set(0.6, 2.2, 0.2);
         group.add(extra);
       }
 
-      group.scale.setScalar(THREE.MathUtils.randFloat(0.85, 1.2));
+      group.scale.setScalar(THREE.MathUtils.randFloat(1.1, 1.6));
     } else if (variant < 0.8) {
       const base = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 10), leafMaterial);
       base.position.y = 0.3;
@@ -1034,40 +1333,193 @@ export class RunnerGame {
     return group;
   }
 
-  private createPlayer() {
-    const group = new THREE.Group();
+  private applyCharacterPalette(kind: CharacterKind) {
+    if (kind === 'female') {
+      this.playerBodyMaterial.color.set(0xf472b6);
+      this.playerBodyMaterial.emissive.set(0x7a274c);
+      this.playerAccentMaterial.color.set(0x1f2937);
+    } else {
+      this.playerBodyMaterial.color.set(0x38bdf8);
+      this.playerBodyMaterial.emissive.set(0x0b1b33);
+      this.playerAccentMaterial.color.set(0x0f172a);
+    }
+  }
+
+  private createHumanRig(kind: CharacterKind): CharacterRig {
+    const root = new THREE.Group();
+
+    const headRadius = 0.26;
+    const legLength = 0.75;
+    const armLength = 0.6;
+    const torsoHeight = 0.7;
+    const hipsHeight = 0.28;
+
+    const torsoWidth = kind === 'female' ? 0.54 : 0.66;
+    const hipWidth = kind === 'female' ? 0.74 : 0.68;
+    const armRadius = kind === 'female' ? 0.09 : 0.105;
+    const torsoTopRadius = torsoWidth * (kind === 'female' ? 0.42 : 0.46);
+    const torsoBottomRadius = torsoWidth * (kind === 'female' ? 0.52 : 0.54);
+    const hipTopRadius = hipWidth * 0.42;
+    const hipBottomRadius = hipWidth * 0.48;
+    const shoulderX = torsoTopRadius + armRadius + 0.02;
+    const shoulderZ = 0.03;
+    const hipX = hipBottomRadius * 0.45;
 
     const shadow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.8, 20),
+      new THREE.CircleGeometry(0.85, 20),
       new THREE.MeshBasicMaterial({ color: 0x0b1020, transparent: true, opacity: 0.25 })
     );
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.02;
 
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.7, 1.4, 16), this.playerBodyMaterial);
-    body.position.y = 0.7;
-    body.castShadow = true;
+    const hips = new THREE.Mesh(
+      new THREE.CylinderGeometry(hipTopRadius, hipBottomRadius, hipsHeight, 18),
+      this.playerAccentMaterial
+    );
+    hips.scale.z = 0.88;
+    hips.position.y = legLength + hipsHeight * 0.5 - 0.06;
 
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 18, 16), this.playerBodyMaterial);
-    head.position.y = 1.75;
-    head.castShadow = true;
+    const hipCap = new THREE.Mesh(
+      new THREE.SphereGeometry(hipTopRadius * 0.9, 16, 12),
+      this.playerAccentMaterial
+    );
+    hipCap.scale.z = 0.82;
+    hipCap.position.y = hipsHeight * 0.22;
+    hips.add(hipCap);
 
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.18, 0.05), this.playerAccentMaterial);
-    visor.position.set(0, 1.68, -0.36);
-    visor.castShadow = true;
+    const torso = new THREE.Mesh(
+      new THREE.CylinderGeometry(torsoTopRadius, torsoBottomRadius, torsoHeight, 20),
+      this.playerBodyMaterial
+    );
+    torso.scale.z = 0.88;
+    torso.position.y = hips.position.y + hipsHeight * 0.5 + torsoHeight * 0.5 - 0.06;
 
-    const pack = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.6, 0.2), this.playerAccentMaterial);
-    pack.position.set(0, 1.05, 0.45);
-    pack.castShadow = true;
+    const torsoCap = new THREE.Mesh(
+      new THREE.SphereGeometry(torsoTopRadius * 1.08, 18, 16),
+      this.playerBodyMaterial
+    );
+    torsoCap.position.y = torsoHeight * 0.36;
+    torsoCap.scale.z = 0.86;
+    torso.add(torsoCap);
 
-    const belt = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.08, 10, 24), this.playerAccentMaterial);
-    belt.rotation.x = Math.PI / 2;
-    belt.position.y = 0.95;
-    belt.castShadow = true;
+    const waist = new THREE.Mesh(
+      new THREE.SphereGeometry(torsoBottomRadius * 0.95, 16, 12),
+      this.playerBodyMaterial
+    );
+    waist.scale.z = 0.82;
+    waist.position.y = hips.position.y + hipsHeight * 0.5 - 0.02;
 
-    group.add(shadow, body, head, visor, pack, belt);
-    group.position.set(this.laneXs[this.targetLane], 0, 0);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 18, 16), this.playerSkinMaterial);
+    head.position.y = torso.position.y + torsoHeight * 0.5 + headRadius + 0.05;
 
+    const hair = kind === 'female' ? this.createFemaleHair(headRadius) : this.createMaleHair(headRadius);
+    head.add(hair);
+
+    const armGeometry = new THREE.CylinderGeometry(armRadius, armRadius * 1.05, armLength, 12);
+    const sleeveGeometry = new THREE.CylinderGeometry(armRadius * 1.45, armRadius * 1.5, 0.26, 12);
+
+    const armL = new THREE.Group();
+    const armR = new THREE.Group();
+    const armLMesh = new THREE.Mesh(armGeometry, this.playerSkinMaterial);
+    armLMesh.position.y = -armLength * 0.5;
+    const armRMesh = armLMesh.clone();
+    const sleeveL = new THREE.Mesh(sleeveGeometry, this.playerBodyMaterial);
+    sleeveL.position.y = -armLength * 0.12;
+    const sleeveR = sleeveL.clone();
+
+    armL.add(armLMesh, sleeveL);
+    armR.add(armRMesh, sleeveR);
+    armL.position.set(-shoulderX, torso.position.y + torsoHeight * 0.38, shoulderZ);
+    armR.position.set(shoulderX, torso.position.y + torsoHeight * 0.38, shoulderZ);
+
+    const shoulderGeometry = new THREE.SphereGeometry(armRadius * 1.25, 12, 10);
+    const shoulderL = new THREE.Mesh(shoulderGeometry, this.playerBodyMaterial);
+    shoulderL.position.set(-shoulderX, torso.position.y + torsoHeight * 0.42, shoulderZ * 0.5);
+    const shoulderR = shoulderL.clone();
+    shoulderR.position.x = shoulderX;
+
+    const legGeometry = new THREE.CylinderGeometry(0.13, 0.15, legLength, 14);
+    const footGeometry = new THREE.BoxGeometry(0.18, 0.08, 0.32);
+
+    const legL = new THREE.Group();
+    const legR = new THREE.Group();
+    const legLMesh = new THREE.Mesh(legGeometry, this.playerAccentMaterial);
+    legLMesh.position.y = -legLength * 0.5;
+    const legRMesh = legLMesh.clone();
+    const footL = new THREE.Mesh(footGeometry, this.playerAccentMaterial);
+    footL.position.set(0, -legLength + 0.06, 0.12);
+    const footR = footL.clone();
+
+    legL.add(legLMesh, footL);
+    legR.add(legRMesh, footR);
+    legL.position.set(-hipX, legLength - 0.04, 0);
+    legR.position.set(hipX, legLength - 0.04, 0);
+
+    root.add(shadow, hips, torso, waist, head, armL, armR, legL, legR, shoulderL, shoulderR);
+
+    this.enableShadows(root);
+    shadow.castShadow = false;
+    shadow.receiveShadow = false;
+
+    return { root, head, torso, hips, armL, armR, legL, legR, headRadius };
+  }
+
+  private createPlayer(kind: CharacterKind) {
+    this.applyCharacterPalette(kind);
+    const rig = this.createHumanRig(kind);
+    this.playerRig = rig;
+
+    rig.root.position.set(this.laneXs[this.targetLane], 0, 0);
+    const headTop = rig.head.position.y + rig.headRadius;
+    this.headTopY = headTop;
+    this.hatPickupY = headTop - 0.08;
+
+    return rig.root;
+  }
+
+  private swapCharacter(kind: CharacterKind) {
+    const position = this.player.position.clone();
+    const rotation = this.player.rotation.clone();
+    this.scene.remove(this.player);
+    this.player = this.createPlayer(kind);
+    this.player.position.copy(position);
+    this.player.rotation.copy(rotation);
+    this.scene.add(this.player);
+  }
+
+  private createFemaleHair(headRadius: number) {
+    const group = new THREE.Group();
+    const crown = new THREE.Mesh(
+      new THREE.SphereGeometry(headRadius * 1.05, 16, 14),
+      this.hairMaterialFemale
+    );
+    crown.scale.set(1, 0.75, 1);
+    crown.position.y = headRadius * 0.45;
+    const back = new THREE.Mesh(
+      new THREE.CylinderGeometry(headRadius * 0.7, headRadius * 0.92, headRadius * 1.45, 14),
+      this.hairMaterialFemale
+    );
+    back.position.set(0, -headRadius * 0.35, headRadius * 0.35);
+    group.add(crown, back);
+    this.enableShadows(group);
+    return group;
+  }
+
+  private createMaleHair(headRadius: number) {
+    const group = new THREE.Group();
+    const top = new THREE.Mesh(
+      new THREE.SphereGeometry(headRadius * 0.95, 14, 12),
+      this.hairMaterialMale
+    );
+    top.scale.set(1, 0.55, 1);
+    top.position.y = headRadius * 0.55;
+    const fringe = new THREE.Mesh(
+      new THREE.BoxGeometry(headRadius * 1.3, headRadius * 0.25, headRadius * 0.5),
+      this.hairMaterialMale
+    );
+    fringe.position.set(0, headRadius * 0.1, -headRadius * 0.75);
+    group.add(top, fringe);
+    this.enableShadows(group);
     return group;
   }
 
@@ -1200,7 +1652,6 @@ export class RunnerGame {
       : new THREE.MeshBasicMaterial({ color: 0xfef3c7, side: THREE.DoubleSide });
     const banner = new THREE.Mesh(new THREE.PlaneGeometry(width + 0.7, 1.1), bannerMaterial);
     banner.position.set(0, height - 0.55, 0);
-    banner.rotation.y = Math.PI;
 
     group.add(left, right, banner);
     this.enableShadows(group);
@@ -1267,25 +1718,36 @@ export class RunnerGame {
 
   private createFinishTexture() {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 128;
+    canvas.width = 1024;
+    canvas.height = 256;
     const ctx = canvas.getContext('2d');
     if (!ctx) {
       return null;
     }
 
-    ctx.fillStyle = '#fff7ed';
+    ctx.fillStyle = '#fff4d6';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.strokeStyle = '#f97316';
-    ctx.lineWidth = 10;
-    ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.fillRect(60, canvas.height / 2 - 58, canvas.width - 120, 116);
 
-    ctx.fillStyle = '#0f172a';
-    ctx.font = 'bold 64px \"Space Grotesk\", sans-serif';
+    ctx.strokeStyle = '#f97316';
+    ctx.lineWidth = 14;
+    ctx.strokeRect(10, 10, canvas.width - 20, canvas.height - 20);
+
+    ctx.font = 'bold 120px \"Space Grotesk\", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('FINISH', canvas.width / 2, canvas.height / 2 + 4);
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.35)';
+    ctx.shadowBlur = 12;
+    ctx.shadowOffsetY = 6;
+
+    ctx.strokeStyle = '#fff7ed';
+    ctx.lineWidth = 12;
+    ctx.strokeText('FINISH', canvas.width / 2, canvas.height / 2 + 6);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillText('FINISH', canvas.width / 2, canvas.height / 2 + 6);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.colorSpace = THREE.SRGBColorSpace;
