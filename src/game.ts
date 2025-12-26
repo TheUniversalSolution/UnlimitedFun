@@ -298,9 +298,9 @@ export class RunnerGame {
       this.graceTimer = Math.max(0, this.graceTimer - delta);
     }
 
+    this.updateEnvironment(delta);
     this.updatePlayer(time, delta);
     this.updateHatStack(time, delta);
-    this.updateEnvironment(delta);
     this.updateHatPickups(time, delta);
     this.updateObstacles(time, delta);
     this.updateFallenHats(delta);
@@ -415,7 +415,8 @@ export class RunnerGame {
     const stride = THREE.MathUtils.lerp(0.18, 0.5, speedFactor) * motionScale;
     this.updateWalkCycle(timeSeconds, stride, pace);
     const bob = Math.sin(timeSeconds * pace * 0.5) * 0.02 * motionScale;
-    this.player.position.y = bob + 0.02 * motionScale;
+    const groundY = this.getRoadHeightAt(this.player.position.z);
+    this.player.position.y = groundY + bob + 0.02 * motionScale;
     this.player.rotation.z = THREE.MathUtils.clamp(deltaX * 0.1, -0.35, 0.35);
     this.player.rotation.x = THREE.MathUtils.lerp(-0.04, -0.12, speedFactor) * motionScale;
 
@@ -889,6 +890,41 @@ export class RunnerGame {
   private getCurveTilt(z: number) {
     const slope = -2 * this.curveStrength * z;
     return -Math.atan(slope);
+  }
+
+  private getRoadHeightAt(z: number) {
+    if (this.roadSegments.length === 0) {
+      return 0;
+    }
+
+    let closest: THREE.Group | null = null;
+    let closestDistance = Infinity;
+    const halfLength = this.segmentLength * 0.5;
+
+    for (const segment of this.roadSegments) {
+      const dz = Math.abs(segment.position.z - z);
+      if (dz <= halfLength && dz < closestDistance) {
+        closestDistance = dz;
+        closest = segment;
+      }
+    }
+
+    if (!closest) {
+      for (const segment of this.roadSegments) {
+        const dz = Math.abs(segment.position.z - z);
+        if (dz < closestDistance) {
+          closestDistance = dz;
+          closest = segment;
+        }
+      }
+    }
+
+    if (!closest) {
+      return this.getCurveOffset(z);
+    }
+
+    const tilt = closest.rotation.x;
+    return closest.position.y - (z - closest.position.z) * Math.tan(tilt);
   }
 
   private setMessage(text: string, visible: boolean) {
