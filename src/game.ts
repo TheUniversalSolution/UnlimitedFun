@@ -4,7 +4,7 @@ const STORAGE_KEY = 'unlimitedfun-best-hats';
 
 type ObstacleKind = 'doorway' | 'sign' | 'finish';
 type HatKind = 'top' | 'cap' | 'beanie' | 'crown';
-type CharacterKind = 'female' | 'male';
+type CharacterKind = 'female' | 'male' | 'male_shorts' | 'female_summer';
 
 type HatPickup = {
   mesh: THREE.Group;
@@ -60,6 +60,8 @@ type HudElements = {
   characterGroup: HTMLElement;
   characterFemale: HTMLButtonElement;
   characterMale: HTMLButtonElement;
+  characterMaleShorts: HTMLButtonElement;
+  characterFemaleSummer: HTMLButtonElement;
 };
 
 export class RunnerGame {
@@ -92,7 +94,7 @@ export class RunnerGame {
   private distanceScale = 0.08;
   private defaultFinishDistance = 750;
   private minFinishDistance = 400;
-  private maxFinishDistance = 1500;
+  private maxFinishDistance = 3000;
   private finishDistance = 750;
   private finishSpawned = false;
 
@@ -498,9 +500,10 @@ export class RunnerGame {
 
   private updateEnvironment(delta: number) {
     const dz = this.speed * this.worldScale * delta;
+    const offscreenZ = this.camera.position.z + this.segmentLength * 0.5 + 2;
     for (const segment of this.roadSegments) {
       segment.position.z += dz;
-      if (segment.position.z > this.segmentLength * 0.5) {
+      if (segment.position.z > offscreenZ) {
         segment.position.z -= this.scrollLength;
       }
       segment.position.y = this.getCurveOffset(segment.position.z);
@@ -621,9 +624,9 @@ export class RunnerGame {
 
     this.shuffle(openLanes);
     const hatLane = openLanes[0];
-    const hatChance = THREE.MathUtils.lerp(0.85, 0.45, difficulty);
-    const hatTrailChance = THREE.MathUtils.lerp(0.32, 0.12, difficulty);
-    const extraHatChance = THREE.MathUtils.lerp(0.28, 0.1, difficulty);
+    const hatChance = THREE.MathUtils.lerp(0.8, 0.3, difficulty);
+    const hatTrailChance = THREE.MathUtils.lerp(0.25, 0.06, difficulty);
+    const extraHatChance = THREE.MathUtils.lerp(0.18, 0.05, difficulty);
     const hatRoll = Math.random();
 
     if (hatRoll < hatChance) {
@@ -738,6 +741,7 @@ export class RunnerGame {
       this.bestHats = this.hats;
       this.saveBest(this.bestHats);
       this.ui.best.textContent = `Best ${this.bestHats}`;
+      this.updateCharacterOptions();
     }
 
     this.ui.hats.textContent = `Hats ${this.hats}`;
@@ -1008,17 +1012,34 @@ export class RunnerGame {
     const characterControls = document.createElement('div');
     characterControls.id = 'hud-character-controls';
 
-    const characterFemale = document.createElement('button');
-    characterFemale.id = 'hud-character-female';
-    characterFemale.type = 'button';
-    characterFemale.textContent = 'Blonde female';
+    const createCharacterButton = (id: string, label: string, unlockText?: string) => {
+      const button = document.createElement('button');
+      button.id = id;
+      button.type = 'button';
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'hud-character-label';
+      labelSpan.textContent = label;
+      const lockSpan = document.createElement('span');
+      lockSpan.className = 'hud-character-lock';
+      lockSpan.textContent = unlockText ?? 'Locked';
+      button.append(labelSpan, lockSpan);
+      return button;
+    };
 
-    const characterMale = document.createElement('button');
-    characterMale.id = 'hud-character-male';
-    characterMale.type = 'button';
-    characterMale.textContent = 'Dark hair male';
+    const characterFemale = createCharacterButton('hud-character-female', 'Blonde female');
+    const characterMale = createCharacterButton('hud-character-male', 'Dark hair male');
+    const characterMaleShorts = createCharacterButton(
+      'hud-character-male-shorts',
+      'Shorts male',
+      'Unlock at Best 50+'
+    );
+    const characterFemaleSummer = createCharacterButton(
+      'hud-character-female-summer',
+      'Summer dress',
+      'Unlock at Best 100+'
+    );
 
-    characterControls.append(characterFemale, characterMale);
+    characterControls.append(characterFemale, characterMale, characterMaleShorts, characterFemaleSummer);
     characterGroup.append(characterTitle, characterControls);
 
     options.append(distanceGroup, characterGroup);
@@ -1039,7 +1060,9 @@ export class RunnerGame {
       distancePlus,
       characterGroup,
       characterFemale,
-      characterMale
+      characterMale,
+      characterMaleShorts,
+      characterFemaleSummer
     };
   }
 
@@ -1059,6 +1082,14 @@ export class RunnerGame {
     this.ui.characterMale.addEventListener('click', (event) => {
       event.stopPropagation();
       this.selectCharacter('male');
+    });
+    this.ui.characterMaleShorts.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.selectCharacter('male_shorts');
+    });
+    this.ui.characterFemaleSummer.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.selectCharacter('female_summer');
     });
   }
 
@@ -1133,15 +1164,45 @@ export class RunnerGame {
     if (!this.isGameOver && !this.isFinished) {
       return;
     }
+    if (!this.isCharacterUnlocked(kind)) {
+      return;
+    }
     this.cancelAutoStart();
     this.pendingCharacter = kind;
     this.updateCharacterOptions();
   }
 
+  private getCharacterUnlockRequirement(kind: CharacterKind) {
+    switch (kind) {
+      case 'male_shorts':
+        return 50;
+      case 'female_summer':
+        return 100;
+      default:
+        return 0;
+    }
+  }
+
+  private isCharacterUnlocked(kind: CharacterKind) {
+    const requirement = this.getCharacterUnlockRequirement(kind);
+    return requirement === 0 || this.bestHats > requirement;
+  }
+
+  private updateCharacterButton(button: HTMLButtonElement, kind: CharacterKind, selected: CharacterKind) {
+    const unlocked = this.isCharacterUnlocked(kind);
+    const selectable = this.distanceSelectionActive && unlocked;
+    button.disabled = !selectable;
+    button.classList.toggle('is-selected', selected === kind && unlocked);
+    button.classList.toggle('is-locked', !unlocked);
+    button.setAttribute('aria-disabled', String(!selectable));
+  }
+
   private updateCharacterOptions() {
     const selected = this.pendingCharacter ?? this.currentCharacter;
-    this.ui.characterFemale.classList.toggle('is-selected', selected === 'female');
-    this.ui.characterMale.classList.toggle('is-selected', selected === 'male');
+    this.updateCharacterButton(this.ui.characterFemale, 'female', selected);
+    this.updateCharacterButton(this.ui.characterMale, 'male', selected);
+    this.updateCharacterButton(this.ui.characterMaleShorts, 'male_shorts', selected);
+    this.updateCharacterButton(this.ui.characterFemaleSummer, 'female_summer', selected);
   }
 
   private createEnvironment() {
@@ -1253,7 +1314,7 @@ export class RunnerGame {
   ) {
     const segment = new THREE.Group();
 
-    const grass = new THREE.Mesh(new THREE.PlaneGeometry(roadWidth + 18, this.segmentLength), grassMaterial);
+    const grass = new THREE.Mesh(new THREE.PlaneGeometry(roadWidth + 54, this.segmentLength), grassMaterial);
     grass.rotation.x = -Math.PI / 2;
     grass.position.y = -0.06;
     grass.receiveShadow = true;
@@ -1305,14 +1366,24 @@ export class RunnerGame {
       segment.add(leftHedge, rightHedge);
     }
 
-    const plantCount = 6;
+    const plantCount = 8;
     const sideOffsets = [-1, 1];
     for (const side of sideOffsets) {
       for (let i = 0; i < plantCount; i += 1) {
         const plant = this.createPlantCluster(trunkMaterial, leafMaterials, flowerMaterial);
         const z = -this.segmentLength / 2 + (this.segmentLength / plantCount) * (i + Math.random());
-        const x = side * (roadWidth / 2 + THREE.MathUtils.randFloat(1.6, 4.2));
+        const x = side * (roadWidth / 2 + THREE.MathUtils.randFloat(3.5, 7));
         plant.position.set(x, 0, z);
+        segment.add(plant);
+      }
+
+      const farPlantCount = 5;
+      for (let i = 0; i < farPlantCount; i += 1) {
+        const plant = this.createPlantCluster(trunkMaterial, leafMaterials, flowerMaterial);
+        const z = -this.segmentLength / 2 + (this.segmentLength / farPlantCount) * (i + Math.random());
+        const x = side * (roadWidth / 2 + THREE.MathUtils.randFloat(8, 14));
+        plant.position.set(x, 0, z);
+        plant.scale.multiplyScalar(THREE.MathUtils.randFloat(1.1, 1.5));
         segment.add(plant);
       }
     }
@@ -1370,19 +1441,36 @@ export class RunnerGame {
   }
 
   private applyCharacterPalette(kind: CharacterKind) {
-    if (kind === 'female') {
-      this.playerBodyMaterial.color.set(0xf472b6);
-      this.playerBodyMaterial.emissive.set(0x7a274c);
-      this.playerAccentMaterial.color.set(0x1f2937);
-    } else {
-      this.playerBodyMaterial.color.set(0x38bdf8);
-      this.playerBodyMaterial.emissive.set(0x0b1b33);
-      this.playerAccentMaterial.color.set(0x0f172a);
+    switch (kind) {
+      case 'female':
+        this.playerBodyMaterial.color.set(0xf472b6);
+        this.playerBodyMaterial.emissive.set(0x7a274c);
+        this.playerAccentMaterial.color.set(0x1f2937);
+        break;
+      case 'male':
+        this.playerBodyMaterial.color.set(0x38bdf8);
+        this.playerBodyMaterial.emissive.set(0x0b1b33);
+        this.playerAccentMaterial.color.set(0x0f172a);
+        break;
+      case 'male_shorts':
+        this.playerBodyMaterial.color.set(0x22c55e);
+        this.playerBodyMaterial.emissive.set(0x064e3b);
+        this.playerAccentMaterial.color.set(0xf59e0b);
+        break;
+      case 'female_summer':
+        this.playerBodyMaterial.color.set(0xf9a8d4);
+        this.playerBodyMaterial.emissive.set(0x7c2d5a);
+        this.playerAccentMaterial.color.set(0xfef3c7);
+        break;
     }
   }
 
   private createHumanRig(kind: CharacterKind): CharacterRig {
     const root = new THREE.Group();
+
+    const isFemale = kind === 'female' || kind === 'female_summer';
+    const isShortsMale = kind === 'male_shorts';
+    const isSummerFemale = kind === 'female_summer';
 
     const headRadius = 0.26;
     const legLength = 0.75;
@@ -1390,16 +1478,16 @@ export class RunnerGame {
     const torsoHeight = 0.7;
     const hipsHeight = 0.28;
 
-    const torsoWidth = kind === 'female' ? 0.54 : 0.66;
-    const hipWidth = kind === 'female' ? 0.74 : 0.68;
-    const armRadius = kind === 'female' ? 0.09 : 0.105;
-    const torsoTopRadius = torsoWidth * (kind === 'female' ? 0.42 : 0.46);
-    const torsoBottomRadius = torsoWidth * (kind === 'female' ? 0.52 : 0.54);
+    const torsoWidth = isFemale ? 0.52 : 0.66;
+    const hipWidth = isFemale ? (isSummerFemale ? 0.78 : 0.74) : 0.68;
+    const armRadius = isFemale ? 0.085 : 0.105;
+    const torsoTopRadius = torsoWidth * (isFemale ? 0.4 : 0.46);
+    const torsoBottomRadius = torsoWidth * (isFemale ? 0.52 : 0.54);
     const hipTopRadius = hipWidth * 0.42;
     const hipBottomRadius = hipWidth * 0.48;
     const shoulderX = torsoTopRadius + armRadius + 0.02;
     const shoulderZ = 0.03;
-    const hipX = hipBottomRadius * 0.45;
+    const hipX = hipBottomRadius * 0.4;
 
     const shadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.85, 20),
@@ -1445,11 +1533,68 @@ export class RunnerGame {
     waist.scale.z = 0.82;
     waist.position.y = hips.position.y + hipsHeight * 0.5 - 0.02;
 
+    if (isShortsMale) {
+      const shorts = new THREE.Mesh(
+        new THREE.CylinderGeometry(hipBottomRadius * 1.05, hipBottomRadius * 1.12, 0.36, 16),
+        this.playerAccentMaterial
+      );
+      shorts.scale.z = 0.9;
+      shorts.position.y = hips.position.y - hipsHeight * 0.2;
+      root.add(shorts);
+    }
+
     const head = new THREE.Mesh(new THREE.SphereGeometry(headRadius, 18, 16), this.playerSkinMaterial);
     head.position.y = torso.position.y + torsoHeight * 0.5 + headRadius + 0.05;
 
-    const hair = kind === 'female' ? this.createFemaleHair(headRadius) : this.createMaleHair(headRadius);
+    const hair = isFemale ? this.createFemaleHair(headRadius) : this.createMaleHair(headRadius);
     head.add(hair);
+
+    if (isShortsMale) {
+      const necklace = new THREE.Mesh(
+        new THREE.TorusGeometry(headRadius * 0.55, 0.03, 8, 24),
+        this.hatAccentMaterial
+      );
+      necklace.rotation.x = Math.PI / 2;
+      necklace.position.set(0, head.position.y - headRadius * 0.75, headRadius * 0.1);
+      root.add(necklace);
+    }
+
+    if (isSummerFemale) {
+      const dress = new THREE.Mesh(
+        new THREE.ConeGeometry(torsoBottomRadius * 1.35, 0.85, 18),
+        this.playerBodyMaterial
+      );
+      dress.position.y = hips.position.y - hipsHeight * 0.1;
+      dress.scale.z = 0.88;
+      root.add(dress);
+
+      const flowerMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        roughness: 0.4,
+        metalness: 0.05,
+        emissive: new THREE.Color(0xf472b6),
+        emissiveIntensity: 0.25
+      });
+      const flowerGeometry = new THREE.SphereGeometry(0.05, 8, 8);
+      const flowerOffsets = [
+        new THREE.Vector3(0, 0.1, torsoBottomRadius * 0.65),
+        new THREE.Vector3(0.12, -0.05, torsoBottomRadius * 0.6),
+        new THREE.Vector3(-0.12, -0.08, torsoBottomRadius * 0.55),
+        new THREE.Vector3(0.05, 0.02, torsoBottomRadius * 0.58)
+      ];
+      for (const offset of flowerOffsets) {
+        const flower = new THREE.Mesh(flowerGeometry, flowerMaterial);
+        flower.position.copy(offset);
+        dress.add(flower);
+      }
+
+      const earringGeometry = new THREE.SphereGeometry(headRadius * 0.1, 10, 8);
+      const earringL = new THREE.Mesh(earringGeometry, this.hatAccentMaterial);
+      earringL.position.set(-headRadius * 0.55, -headRadius * 0.12, headRadius * 0.2);
+      const earringR = earringL.clone();
+      earringR.position.x = headRadius * 0.55;
+      head.add(earringL, earringR);
+    }
 
     const armGeometry = new THREE.CylinderGeometry(armRadius, armRadius * 1.05, armLength, 12);
     const sleeveGeometry = new THREE.CylinderGeometry(armRadius * 1.45, armRadius * 1.5, 0.26, 12);
@@ -1474,12 +1619,13 @@ export class RunnerGame {
     const shoulderR = shoulderL.clone();
     shoulderR.position.x = shoulderX;
 
+    const legMaterial = isShortsMale || isSummerFemale ? this.playerSkinMaterial : this.playerAccentMaterial;
     const legGeometry = new THREE.CylinderGeometry(0.13, 0.15, legLength, 14);
     const footGeometry = new THREE.BoxGeometry(0.18, 0.08, 0.32);
 
     const legL = new THREE.Group();
     const legR = new THREE.Group();
-    const legLMesh = new THREE.Mesh(legGeometry, this.playerAccentMaterial);
+    const legLMesh = new THREE.Mesh(legGeometry, legMaterial);
     legLMesh.position.y = -legLength * 0.5;
     const legRMesh = legLMesh.clone();
     const footL = new THREE.Mesh(footGeometry, this.playerAccentMaterial);
@@ -1738,12 +1884,12 @@ export class RunnerGame {
       ctx.restore();
     };
 
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < 14; i += 1) {
       drawCloud(
         Math.random() * canvas.width,
         Math.random() * canvas.height * 0.55,
-        THREE.MathUtils.randFloat(0.45, 0.9),
-        THREE.MathUtils.randFloat(0.55, 0.9)
+        THREE.MathUtils.randFloat(0.5, 1),
+        THREE.MathUtils.randFloat(0.75, 0.98)
       );
     }
 

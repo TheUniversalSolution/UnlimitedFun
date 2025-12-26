@@ -152,6 +152,44 @@ canvas {
   gap: 8px;
 }
 
+#hud-character-controls {
+  flex-wrap: wrap;
+}
+
+#hud-character-controls button {
+  position: relative;
+  flex: 1 1 120px;
+  min-width: 120px;
+  overflow: hidden;
+}
+
+.hud-character-label {
+  display: inline-block;
+  transition: opacity 0.2s ease, filter 0.2s ease;
+}
+
+.hud-character-lock {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.6);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+#hud-options button.is-locked .hud-character-label {
+  opacity: 0.4;
+  filter: blur(1.6px);
+}
+
+#hud-options button.is-locked .hud-character-lock {
+  display: flex;
+}
+
 #hud-distance-value {
   min-width: 72px;
   text-align: center;
