@@ -107,7 +107,7 @@ export class RunnerGame {
   private stackHats: THREE.Group[] = [];
 
   private hatKinds: HatKind[] = ['top', 'beanie', 'cap', 'crown'];
-  private hatSpacing = 0.45;
+  private hatSpacing = 0.06;
   private hatPickupY = 2.15;
   private headTopY = 2.2;
   private hatPulseDuration = 0.12;
@@ -477,13 +477,17 @@ export class RunnerGame {
 
   private updateHatStack(time: number, delta: number) {
     const timeSeconds = time * 0.001;
+    let stackY = this.headTopY;
     for (let i = 0; i < this.stackHats.length; i += 1) {
       const hat = this.stackHats[i];
       const sway = Math.sin(timeSeconds * 2.4 + i * 0.7) * 0.08;
       hat.position.x = sway * 0.35;
-      hat.position.y = this.headTopY + i * this.hatSpacing + Math.sin(timeSeconds * 3 + i) * 0.02;
+      const offsetY = this.getHatStackOffset(hat);
+      const hatHeight = this.getHatStackHeight(hat);
+      hat.position.y = stackY + offsetY + Math.sin(timeSeconds * 3 + i) * 0.02;
       hat.position.z = 0;
       hat.rotation.z = sway * 0.8;
+      stackY += hatHeight + this.hatSpacing;
 
       const pulse = hat.userData.pulse as number | undefined;
       const baseScale = (hat.userData.baseScale as number | undefined) ?? 1;
@@ -520,8 +524,12 @@ export class RunnerGame {
       const hat = this.hatPickups[i];
       hat.mesh.position.z += dz;
       hat.mesh.rotation.y += hat.spin * delta;
+      const offsetY = (hat.mesh.userData.stackOffsetY as number | undefined) ?? 0;
       hat.mesh.position.y =
-        this.hatPickupY + Math.sin(timeSeconds * 2 + hat.bob) * 0.12 + this.getCurveOffset(hat.mesh.position.z);
+        this.hatPickupY +
+        offsetY +
+        Math.sin(timeSeconds * 2 + hat.bob) * 0.12 +
+        this.getCurveOffset(hat.mesh.position.z);
 
       if (!this.isGameOver && !this.isFinished) {
         const dx = Math.abs(hat.mesh.position.x - playerX);
@@ -624,6 +632,7 @@ export class RunnerGame {
 
     this.shuffle(openLanes);
     const hatLane = openLanes[0];
+    const hatLanes = [hatLane, ...openLanes.filter((lane) => lane !== hatLane)];
     const hatChance = THREE.MathUtils.lerp(0.8, 0.3, difficulty);
     const hatTrailChance = THREE.MathUtils.lerp(0.25, 0.06, difficulty);
     const extraHatChance = THREE.MathUtils.lerp(0.18, 0.05, difficulty);
@@ -633,23 +642,26 @@ export class RunnerGame {
       if (hatRoll < hatTrailChance) {
         this.spawnHatTrail(hatLane, 3);
       } else {
-        this.spawnHat(hatLane, -this.spawnDepth - 4);
+        this.spawnHatInLanes(hatLanes, -this.spawnDepth - 4);
         if (openLanes.length > 1 && hatRoll > hatChance * 0.8) {
-          this.spawnHat(openLanes[1], -this.spawnDepth - 10);
+          this.spawnHatInLanes(hatLanes, -this.spawnDepth - 10);
         }
       }
 
       if (Math.random() < extraHatChance) {
-        const extraLane = openLanes[Math.floor(Math.random() * openLanes.length)];
-        this.spawnHat(extraLane, -this.spawnDepth - 16);
+        this.spawnHatInLanes(hatLanes, -this.spawnDepth - 16);
       }
     }
   }
 
   private spawnHat(laneIndex: number, spawnZ: number) {
+    if (!this.canSpawnHat(laneIndex, spawnZ)) {
+      return false;
+    }
     const kind = this.hatKinds[Math.floor(Math.random() * this.hatKinds.length)];
     const hat = this.createHatModel(kind);
-    hat.position.set(this.laneXs[laneIndex], this.hatPickupY + this.getCurveOffset(spawnZ), spawnZ);
+    const offsetY = (hat.userData.stackOffsetY as number | undefined) ?? 0;
+    hat.position.set(this.laneXs[laneIndex], this.hatPickupY + offsetY + this.getCurveOffset(spawnZ), spawnZ);
     hat.scale.setScalar(0.95);
     this.scene.add(hat);
     this.hatPickups.push({
@@ -659,12 +671,37 @@ export class RunnerGame {
       spin: THREE.MathUtils.randFloat(0.6, 1.4),
       bob: Math.random() * Math.PI * 2
     });
+    return true;
   }
 
   private spawnHatTrail(laneIndex: number, count: number) {
     for (let i = 0; i < count; i += 1) {
       this.spawnHat(laneIndex, -this.spawnDepth - i * this.hatTrailSpacing);
     }
+  }
+
+  private spawnHatInLanes(lanes: number[], spawnZ: number) {
+    for (const laneIndex of lanes) {
+      if (this.spawnHat(laneIndex, spawnZ)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private canSpawnHat(laneIndex: number, spawnZ: number) {
+    const clearance = 1.4;
+    for (const obstacle of this.obstacles) {
+      const laneMatches = obstacle.kind === 'finish' ? true : obstacle.lane === laneIndex;
+      if (!laneMatches) {
+        continue;
+      }
+      const dz = Math.abs(obstacle.mesh.position.z - spawnZ);
+      if (dz < obstacle.hitDepth + clearance) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private spawnObstacle(laneIndex: number, spawnZ: number) {
@@ -728,7 +765,11 @@ export class RunnerGame {
 
   private addHatToStack(kind: HatKind) {
     const hat = this.createHatModel(kind);
-    hat.position.set(0, this.headTopY + this.stackHats.length * this.hatSpacing, 0);
+    let stackY = this.headTopY;
+    for (const stacked of this.stackHats) {
+      stackY += this.getHatStackHeight(stacked) + this.hatSpacing;
+    }
+    hat.position.set(0, stackY + this.getHatStackOffset(hat), 0);
     hat.userData.baseScale = 0.92;
     hat.userData.pulse = this.hatPulseDuration;
     hat.scale.setScalar(0.92);
@@ -929,6 +970,16 @@ export class RunnerGame {
 
     const tilt = closest.rotation.x;
     return closest.position.y - (z - closest.position.z) * Math.tan(tilt);
+  }
+
+  private getHatStackHeight(hat: THREE.Group) {
+    const height = hat.userData.stackHeight as number | undefined;
+    return typeof height === 'number' && height > 0 ? height : 0.4;
+  }
+
+  private getHatStackOffset(hat: THREE.Group) {
+    const offset = hat.userData.stackOffsetY as number | undefined;
+    return typeof offset === 'number' ? offset : 0;
   }
 
   private setMessage(text: string, visible: boolean) {
@@ -1177,7 +1228,7 @@ export class RunnerGame {
       case 'male_shorts':
         return 50;
       case 'female_summer':
-        return 100;
+        return 100; 
       default:
         return 0;
     }
@@ -1755,6 +1806,12 @@ export class RunnerGame {
         break;
       }
     }
+
+    const bounds = new THREE.Box3().setFromObject(group);
+    const stackHeight = bounds.max.y - bounds.min.y;
+    const stackOffset = -bounds.min.y;
+    group.userData.stackHeight = stackHeight;
+    group.userData.stackOffsetY = stackOffset;
 
     this.enableShadows(group);
     return group;
